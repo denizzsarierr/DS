@@ -1,13 +1,16 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split,cross_val_score, KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
+from xgboost import XGBRegressor
+import numpy as np
 
 
 
 data = pd.read_csv("train.csv")
+test_data = pd.read_csv("test.csv")
 
 print(data.shape)
 print(data.head())
@@ -29,7 +32,7 @@ nominal_cols = ["MSZoning","Street","Alley","LotShape","LandContour","Utilities"
                 "HouseStyle","RoofStyle","RoofMatl","Exterior1st","Exterior2nd",
                 "MasVnrType","Foundation","Heating","CentralAir","Electrical",
                 "GarageType","PavedDrive","Fence","MiscFeature","SaleType",
-                "SaleCondition","LandSlope","BsmtExposure","BsmtFinType1",""
+                "SaleCondition","LandSlope","BsmtExposure","BsmtFinType1",
                 "BsmtFinType2","Functional","GarageFinish"]
 
 def clean_data(data):
@@ -38,6 +41,7 @@ def clean_data(data):
     # Dropping identifier, does not help
 
     data.drop("Id",axis=1,inplace =True)
+
 
     # Converting NaN to None, they are meaningful, means fature does not exist.
     garage_cols = ["GarageType","GarageFinish","GarageQual","GarageCond"]
@@ -101,30 +105,66 @@ def clean_data(data):
 
     return data
 
+
+
+
+
 data = clean_data(data)
-
-
+test_data_clean = clean_data(test_data)
 
 y = data.SalePrice
 X = data.drop("SalePrice",axis = 1)
 
+test_data_clean = test_data_clean.reindex(columns=X.columns, fill_value=0)
+
 X_train, X_val, y_train, y_val = train_test_split(X,y,train_size=0.8,test_size=0.2,random_state=0)
 
-print(X_train.dtypes[X_train.dtypes == "object"])
+xgb_params = dict(
+    n_estimators=2000,
+    learning_rate=0.03,
+    max_depth=3,
+    min_child_weight=1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    objective="reg:squarederror",
+    eval_metric="mae",
+    random_state=0,
+    early_stopping_rounds=30
+)
 
-model = RandomForestRegressor(n_estimators=100,random_state=0)
+use_log = False
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+    X_tr, X_va = X.iloc[train_idx], X.iloc[val_idx]
+    y_tr, y_va = y.iloc[train_idx], y.iloc[val_idx]
+
+    xgb_model = XGBRegressor(**xgb_params)
+    xgb_model.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
+    xgb_pred = xgb_model.predict(X_va)
+    xgb_mae = mean_absolute_error(np.expm1(y_va) if use_log else y_va,
+                                  np.expm1(xgb_pred) if use_log else xgb_pred)
+    
+    print(f"Fold {fold+1} - XGB MAE: {xgb_mae}")
+
+xgb_params.pop("early_stopping_rounds")
+
+final_model = final_model = XGBRegressor(**xgb_params)
+final_model.fit(X, y)
+
+preds_test = final_model.predict(test_data_clean)
+
+print(preds_test)
+print("Train SalePrice mean:", data.SalePrice.mean())
+print("Test predictions mean:", preds_test.mean())
+
+import matplotlib.pyplot as plt
+plt.hist(data.SalePrice, bins=50, alpha=0.5, label="Train")
+plt.hist(preds_test, bins=50, alpha=0.5, label="Test")
+plt.legend()
+plt.show()
 
 
-
-pipeline = Pipeline(steps=[("model", model)])
-
-pipeline.fit(X_train,y_train)
-
-prediction = pipeline.predict(X_val)
-
-result = mean_absolute_error(y_val,prediction)
-
-print(result)
 
 
 
